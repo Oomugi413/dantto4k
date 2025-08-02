@@ -224,26 +224,33 @@ int main(int argc, char* argv[]) {
     }
 
     std::unique_ptr<std::istream> inputStream;
-    std::unique_ptr<std::ifstream> inputFs;
     if (useStdin) {
         inputStream.reset(&std::cin);
     }
     else {
+        std::unique_ptr<std::ifstream> inputFs;
         inputFs = std::make_unique<std::ifstream>(inputPath, std::ios::binary);
         if (!inputFs->is_open()) {
             std::cerr << "Unable to open input file: " << inputPath << std::endl;
             return 1;
         }
         inputStream = std::move(inputFs);
+        inputFs.release();
     }
 
-    std::unique_ptr<std::ofstream> outputFs;
+    std::unique_ptr<std::ostream> outputStream;
+    if (useStdout) {
+        outputStream.reset(&std::cout);
+    }
     if (!useStdout) {
+        std::unique_ptr<std::ofstream> outputFs;
         outputFs = std::make_unique<std::ofstream>(outputPath, std::ios::binary);
         if (!outputFs->is_open()) {
             std::cerr << "Unable to open output file: " << outputPath << std::endl;
             return 1;
         }
+        outputStream = std::move(outputFs);
+        outputFs.release();
     }
 
     handler.setOutputCallback([&](const uint8_t* data, size_t size) {
@@ -258,7 +265,7 @@ int main(int argc, char* argv[]) {
     std::vector<uint8_t> inputBuffer;
     inputBuffer.reserve(chunkSize * 2);
     while (true) {
-        if (!useStdin && inputStream->eof()) {
+        if (inputStream->eof()) {
             break;
         }
 
@@ -284,14 +291,7 @@ int main(int argc, char* argv[]) {
         }
 
         inputBuffer.erase(inputBuffer.begin(), inputBuffer.begin() + (inputBuffer.size() - stream.leftBytes()));
-
-        if (useStdout) {
-            std::cout.write(reinterpret_cast<const char*>(output.data()), output.size());
-        }
-        else {
-            outputFs->write(reinterpret_cast<const char*>(output.data()), output.size());
-        }
-        
+        outputStream->write(reinterpret_cast<const char*>(output.data()), output.size());
         output.clear();
     }
 
@@ -301,6 +301,9 @@ int main(int argc, char* argv[]) {
     demuxer.printStatistics();
     demuxer.clear();
     demuxer.release();
+
+    inputStream.release();
+    outputStream.release();
 
     std::cerr << "Elapsed time: " << elapsed_seconds.count() << " seconds\n";
     return 0;

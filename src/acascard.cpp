@@ -63,8 +63,6 @@ namespace MmtTlv::Acas {
         Common::sha256_t kcl;
 
         {
-            auto scope = smartCard.scopedTransaction();
-
             getA0AuthKcl(kcl);
 
             ApduCommand apdu(0x90, 0x34, 0x00, 0x01);

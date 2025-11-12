@@ -1,8 +1,9 @@
 #pragma once
+#include <memory>
 
 namespace MmtTlv {
 
-struct MfuData;
+struct MpuData;
 class MmtStream;
 class Ecm;
 class MhBit;
@@ -21,10 +22,12 @@ public:
 	virtual ~DemuxerHandler() = default;
 
 	// MPU data
-	virtual void onVideoData(const std::shared_ptr<MmtStream> mmtStream, const std::shared_ptr<struct MfuData>& mfuData) {}
-	virtual void onAudioData(const std::shared_ptr<MmtStream> mmtStream, const std::shared_ptr<struct MfuData>& mfuData) {}
-	virtual void onSubtitleData(const std::shared_ptr<MmtStream> mmtStream, const std::shared_ptr<struct MfuData>& mfuData) {}
-	virtual void onApplicationData(const std::shared_ptr<MmtStream> mmtStream, const std::shared_ptr<struct MfuData>& mfuData) {}
+	virtual void onVideoData(const std::shared_ptr<MmtStream>& mmtStream, const std::shared_ptr<MpuData>& mfuData) {}
+	virtual void onAudioData(const std::shared_ptr<MmtStream>& mmtStream, const std::shared_ptr<MpuData>& mfuData) {}
+	virtual void onSubtitleData(const std::shared_ptr<MmtStream>& mmtStream, const std::shared_ptr<MpuData>& mfuData) {}
+	virtual void onApplicationData(const std::shared_ptr<MmtStream>& mmtStream, const std::shared_ptr<MpuData>& mfuData) {}
+
+	virtual void onPacketDrop(uint16_t packetId, const std::shared_ptr<MmtTlv::MmtStream>& mmtStream) {}
 
 	// MMT-SI
 	virtual void onEcm(const std::shared_ptr<Ecm>& ecm) {}

@@ -3,15 +3,18 @@
 
 Config config = Config{};
 
-static std::string trim(const std::string& str) {
+namespace {
+
+std::string trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\n\r");
     if (first == std::string::npos) return "";
     size_t last = str.find_last_not_of(" \t\n\r");
     return str.substr(first, last - first + 1);
 }
 
-Config loadConfig(const std::string& filename)
-{
+}
+
+Config loadConfig(const std::string& filename) {
      Config config;
      std::ifstream file(filename);
      if (!file.is_open()) {
@@ -57,6 +60,16 @@ Config loadConfig(const std::string& filename)
                  if (key == "smartCardReaderName") {
                      config.smartCardReaderName = value;
                  }
+                 if (key == "casProxyServer") {
+                     config.casProxyServer = value;
+                 }
+                 if (key == "disableTransaction") {
+                     if (value == "true") {
+                         config.disableTransaction = true;
+                     }
+                 }
+
+                 
              }
          }
          if (currentSection == "audio") {

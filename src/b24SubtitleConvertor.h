@@ -297,22 +297,25 @@ namespace B24 {
 
 }
 
-class B24SubtiteOutput {
+class B24SubtitleOutput {
 public:
-    B24SubtiteOutput() = default;
-    B24SubtiteOutput(std::vector<uint8_t> pesData, uint64_t begin, uint64_t end)
-        : pesData(pesData), begin(begin), end(end) {}
+    B24SubtitleOutput() = default;
+    B24SubtitleOutput(std::vector<uint8_t> pesData, std::optional<uint64_t> begin)
+        : pesData(pesData), begin(begin) {}
+
+    uint64_t calcPts(uint64_t programStartTime) const {
+        if (!begin) {
+            return 0;
+        }
+        return (programStartTime * 1000 + *begin) * 90;
+    }
+
     std::vector<uint8_t> pesData;
-    uint64_t begin;
-    uint64_t end;
+    std::optional<uint64_t> begin;
 };
 
-class B24SubtiteConvertor {
+class B24SubtitleConvertor {
 public:
-    static bool convert(const std::vector<uint8_t>& input, std::list<B24SubtiteOutput>& output);
-
-private:
-    static void makePesData(const B24::CaptionStatementData& captionStatementData, std::vector<uint8_t>& output);
-
+    static bool convert(const std::string& input, std::list<B24SubtitleOutput>& output);
 
 };

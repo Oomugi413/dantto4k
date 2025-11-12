@@ -3,7 +3,6 @@
 #include "contentCopyControlDescriptor.h"
 #include "mhAudioComponentDescriptor.h"
 #include "mhContentDescriptor.h"
-#include "mhEit.h"
 #include "mhEventGroupDescriptor.h"
 #include "mhExtendedEventDescriptor.h"
 #include "mhLinkageDescriptor.h"
@@ -21,9 +20,10 @@
 #include "videoComponentDescriptor.h"
 #include "mhServiceDescriptor.h"
 #include "descriptorConverter.h"
-#include "mhBit.h"
 #include "mhAit.h"
+#include "mhBit.h"
 #include "mhCdt.h"
+#include "mhEit.h"
 #include "mhSdt.h"
 #include "mhTot.h"
 #include "mpt.h"
@@ -33,7 +33,7 @@
 #include "adtsConverter.h"
 #include "mmtTlvDemuxer.h"
 #include "timebase.h"
-#include "mfuDataProcessorBase.h"
+#include "mpuProcessorBase.h"
 #include "config.h"
 #include "ntp.h"
 #include "pugixml.hpp"
@@ -41,119 +41,104 @@
 
 namespace {
 
-    int convertRunningStatus(int runningStatus) {
-        /*
-           MMT
-           0 undefined
-           1 In non-operation
-           2 It will start within several seconds
-            (ex: video recording use)
-           3 Out of operation
-           4 In operation
-           5 – 7 Reserved for use in the future
+int convertRunningStatus(int runningStatus) {
+    /*
+        MMT
+        0 undefined
+        1 In non-operation
+        2 It will start within several seconds
+        (ex: video recording use)
+        3 Out of operation
+        4 In operation
+        5 – 7 Reserved for use in the future
 
-           MPEG2 TS
-           GST_MPEGTS_RUNNING_STATUS_UNDEFINED (0)
-           GST_MPEGTS_RUNNING_STATUS_NOT_RUNNING (1)
-           GST_MPEGTS_RUNNING_STATUS_STARTS_IN_FEW_SECONDS (2)
-           GST_MPEGTS_RUNNING_STATUS_PAUSING (3)
-           GST_MPEGTS_RUNNING_STATUS_RUNNING (4)
-           GST_MPEGTS_RUNNING_STATUS_OFF_AIR (5)
-       */
+        MPEG2 TS
+        GST_MPEGTS_RUNNING_STATUS_UNDEFINED (0)
+        GST_MPEGTS_RUNNING_STATUS_NOT_RUNNING (1)
+        GST_MPEGTS_RUNNING_STATUS_STARTS_IN_FEW_SECONDS (2)
+        GST_MPEGTS_RUNNING_STATUS_PAUSING (3)
+        GST_MPEGTS_RUNNING_STATUS_RUNNING (4)
+        GST_MPEGTS_RUNNING_STATUS_OFF_AIR (5)
+    */
 
-        switch (runningStatus) {
-        case 0:
-            return 0;
-        case 1:
-            return 1;
-        case 2:
-            return 2;
-        case 3:
-            return 5;
-        case 4:
-            return 4;
-        default:
-            return 0;
-        }
+    switch (runningStatus) {
+    case 0:
+        return 0;
+    case 1:
+        return 1;
+    case 2:
+        return 2;
+    case 3:
+        return 5;
+    case 4:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+int assetType2streamType(uint32_t assetType) {
+    int stream_type = 0;
+    switch (assetType) {
+    case MmtTlv::AssetType::hev1:
+        stream_type = StreamType::VIDEO_HEVC;
+        break;
+    case MmtTlv::AssetType::mp4a:
+        stream_type = config.disableADTSConversion ? StreamType::AUDIO_AAC_LATM : StreamType::AUDIO_AAC;
+        break;
+    case MmtTlv::AssetType::stpp:
+        stream_type = StreamType::PRIVATE_DATA;
+        break;
     }
 
-    int assetType2streamType(uint32_t assetType)
-    {
-        int stream_type = 0;
-        switch (assetType) {
-        case MmtTlv::AssetType::hev1:
-            stream_type = StreamType::VIDEO_HEVC;
-            break;
-        case MmtTlv::AssetType::mp4a:
-            stream_type = config.disableADTSConversion ? StreamType::AUDIO_AAC_LATM : StreamType::AUDIO_AAC;
-            break;
-        case MmtTlv::AssetType::stpp:
-            stream_type = StreamType::PRIVATE_DATA;
-            break;
-        }
+    return stream_type;
+}
 
-        return stream_type;
+uint8_t convertTableId(uint8_t mmtTableId) {
+    switch (mmtTableId) {
+    case MmtTlv::MmtTableId::Mpt:
+        return 0x02;
+    case MmtTlv::MmtTableId::Plt:
+        return 0x00;
+    case MmtTlv::MmtTableId::MhEitPf:
+        return 0x4E;
+    case MmtTlv::MmtTableId::MhEitS_0:
+    case MmtTlv::MmtTableId::MhEitS_1:
+    case MmtTlv::MmtTableId::MhEitS_2:
+    case MmtTlv::MmtTableId::MhEitS_3:
+    case MmtTlv::MmtTableId::MhEitS_4:
+    case MmtTlv::MmtTableId::MhEitS_5:
+    case MmtTlv::MmtTableId::MhEitS_6:
+    case MmtTlv::MmtTableId::MhEitS_7:
+    case MmtTlv::MmtTableId::MhEitS_8:
+    case MmtTlv::MmtTableId::MhEitS_9:
+    case MmtTlv::MmtTableId::MhEitS_10:
+    case MmtTlv::MmtTableId::MhEitS_11:
+    case MmtTlv::MmtTableId::MhEitS_12:
+    case MmtTlv::MmtTableId::MhEitS_13:
+    case MmtTlv::MmtTableId::MhEitS_14:
+    case MmtTlv::MmtTableId::MhEitS_15:
+        return 0x50;
+    case MmtTlv::MmtTableId::MhTot:
+        return 0x73;
+    case MmtTlv::MmtTableId::MhBit:
+        return 0xC4;
+    case MmtTlv::MmtTableId::MhSdtActual:
+        return 0x42;
+    case MmtTlv::MmtTableId::MhCdt:
+        return 0xC8;
     }
 
-    uint8_t convertTableId(uint8_t mmtTableId) {
-        switch (mmtTableId) {
-        case MmtTlv::MmtTableId::Mpt:
-            return 0x02;
-        case MmtTlv::MmtTableId::Plt:
-            return 0x00;
-        case MmtTlv::MmtTableId::MhEitPf:
-            return 0x4E;
-        case MmtTlv::MmtTableId::MhEitS_0:
-        case MmtTlv::MmtTableId::MhEitS_1:
-        case MmtTlv::MmtTableId::MhEitS_2:
-        case MmtTlv::MmtTableId::MhEitS_3:
-        case MmtTlv::MmtTableId::MhEitS_4:
-        case MmtTlv::MmtTableId::MhEitS_5:
-        case MmtTlv::MmtTableId::MhEitS_6:
-        case MmtTlv::MmtTableId::MhEitS_7:
-        case MmtTlv::MmtTableId::MhEitS_8:
-        case MmtTlv::MmtTableId::MhEitS_9:
-        case MmtTlv::MmtTableId::MhEitS_10:
-        case MmtTlv::MmtTableId::MhEitS_11:
-        case MmtTlv::MmtTableId::MhEitS_12:
-        case MmtTlv::MmtTableId::MhEitS_13:
-        case MmtTlv::MmtTableId::MhEitS_14:
-        case MmtTlv::MmtTableId::MhEitS_15:
-            return 0x50;
-        case MmtTlv::MmtTableId::MhTot:
-            return 0x73;
-        case MmtTlv::MmtTableId::MhBit:
-            return 0xC4;
-        case MmtTlv::MmtTableId::MhSdtActual:
-            return 0x42;
-        case MmtTlv::MmtTableId::MhCdt:
-            return 0xC8;
-        }
-
-        return 0xFF;
-    }
+    return 0xFF;
+}
 
 } // anonymous namespace
 
-void RemuxerHandler::writePcr(uint64_t pcr)
-{
-
-    ts::TSPacket packet;
-    packet.init(PCR_PID, mapCC[PCR_PID] & 0xF, 0);
-    mapCC[PCR_PID]++;
-
-    packet.setPCR(pcr, true);
-
-    output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
-}
-
-void RemuxerHandler::onVideoData(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const std::shared_ptr<struct MmtTlv::MfuData>& mfuData)
-{
+void RemuxerHandler::onVideoData(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const std::shared_ptr<MmtTlv::MpuData>& mfuData) {
     writeStream(mmtStream, mfuData, mfuData->data);
 }
 
-void RemuxerHandler::onAudioData(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const std::shared_ptr<struct MmtTlv::MfuData>& mfuData)
-{
+void RemuxerHandler::onAudioData(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const std::shared_ptr<MmtTlv::MpuData>& mfuData) {
     // ADTS conversion for 22.2ch is not implemented.
     if (mmtStream->Is22_2chAudio()) {
         writeStream(mmtStream, mfuData, mfuData->data);
@@ -174,8 +159,15 @@ void RemuxerHandler::onAudioData(const std::shared_ptr<MmtTlv::MmtStream> mmtStr
     writeStream(mmtStream, mfuData, output);
 }
 
-void RemuxerHandler::onSubtitleData(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const std::shared_ptr<struct MmtTlv::MfuData>& mfuData)
-{
+void RemuxerHandler::onSubtitleData(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const std::shared_ptr<struct MmtTlv::MpuData>& mfuData) {
+    std::list<B24SubtitleOutput> output;
+    std::string ttml(mfuData->data.begin(), mfuData->data.end());
+    B24SubtitleConvertor::convert(ttml, output);
+
+    if (output.empty()) {
+        return;
+    }
+    
     {
         B24::CaptionManagementData captionManagementData;
         B24::CaptionManagementData::Langage langage;
@@ -191,30 +183,51 @@ void RemuxerHandler::onSubtitleData(const std::shared_ptr<MmtTlv::MmtStream> mmt
         B24::PESData pesData(dataGroup);
         pesData.SetPESType(B24::PESData::PESType::Synchronized);
 
-        std::vector<uint8_t> output;
-        pesData.pack(output);
+        std::vector<uint8_t> packedPesData;
+        pesData.pack(packedPesData);
 
-        B24SubtiteOutput subtitleOutput;
-        subtitleOutput.pesData = output;
-        subtitleOutput.begin = 0;
-        subtitleOutput.end = 0;
+        B24SubtitleOutput subtitleOutput;
+        subtitleOutput.pesData = packedPesData;
+        subtitleOutput.begin = output.begin()->begin;
         writeSubtitle(mmtStream, subtitleOutput);
     }
-
-    std::list<B24SubtiteOutput> output;
-    B24SubtiteConvertor::convert(mfuData->data, output);
+    
 
     for (const auto& pesData : output) {
         writeSubtitle(mmtStream, pesData);
     }
 }
 
-void RemuxerHandler::onApplicationData(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const std::shared_ptr<struct MmtTlv::MfuData>& mfuData)
-{
+void RemuxerHandler::onApplicationData(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const std::shared_ptr<MmtTlv::MpuData>& mfuData) {
 }
 
-void RemuxerHandler::writeStream(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const std::shared_ptr<struct MmtTlv::MfuData>& mfuData, const std::vector<uint8_t>& streamData)
-{
+void RemuxerHandler::onPacketDrop(uint16_t packetId, const std::shared_ptr<MmtTlv::MmtStream>& mmtStream) {
+    if (mmtStream) {
+        ++mapCC[mmtStream->getMpeg2PacketId()];
+        return;
+    }
+
+    switch (packetId) {
+    case MmtTlv::MmtPacketId::MhEit:
+        ++mapCC[ts::PID_EIT];
+        break;
+    case MmtTlv::MmtPacketId::MhSdt:
+        ++mapCC[ts::PID_SDT];
+        break;
+    case MmtTlv::MmtPacketId::MhTot:
+        ++mapCC[ts::PID_TOT];
+        break;
+    case MmtTlv::MmtPacketId::MhCdt:
+        ++mapCC[ts::PID_CDT];
+        break;
+    }
+}
+
+void RemuxerHandler::setOutputCallback(OutputCallback cb) {
+    outputCallback = std::move(cb);
+}
+
+void RemuxerHandler::writeStream(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const std::shared_ptr<MmtTlv::MpuData>& mfuData, const std::vector<uint8_t>& streamData) {
     constexpr AVRational tsTimeBase = { 1, 90000 };
     const AVRational timeBase = { mmtStream->timeBase.num, mmtStream->timeBase.den };
 
@@ -224,11 +237,6 @@ void RemuxerHandler::writeStream(const std::shared_ptr<MmtTlv::MmtStream> mmtStr
     if ((mfuData->pts != MmtTlv::NOPTS_VALUE && mfuData->dts != MmtTlv::NOPTS_VALUE) && timeBase.den > 0) {
         tsPts = av_rescale_q(mfuData->pts, timeBase, tsTimeBase);
         tsDts = av_rescale_q(mfuData->dts, timeBase, tsTimeBase);
-    }
-
-    if (mmtStream->getAssetType() == MmtTlv::AssetType::hev1) {
-        writePcr(tsDts * 300);
-        lastVideoPts = tsPts;
     }
 
     std::vector<uint8_t> pesOutput;
@@ -262,26 +270,24 @@ void RemuxerHandler::writeStream(const std::shared_ptr<MmtTlv::MmtStream> mmtStr
         memcpy(packet.b + packet.getHeaderSize(), pesOutput.data() + (pesOutput.size() - payloadLength), chunkSize);
         payloadLength -= chunkSize;
 
-        output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+        if (outputCallback) {
+            outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+        }
         ++i;
     }
 }
 
-
-void RemuxerHandler::writeSubtitle(const std::shared_ptr<MmtTlv::MmtStream> mmtStream, const B24SubtiteOutput& subtitle)
-{
-    if (lastVideoPts == -1) {
+void RemuxerHandler::writeSubtitle(const std::shared_ptr<MmtTlv::MmtStream>& mmtStream, const B24SubtitleOutput& subtitle) {
+    std::vector<uint8_t> pesOutput;
+    PESPacket pes;
+    uint64_t pts = subtitle.calcPts(programStartTime);
+    pts = std::max(pts, lastPcr / 300);
+    if (pts == 0) {
         return;
     }
 
-    std::vector<uint8_t> pesOutput;
-    PESPacket pes;
-    pes.setPts(lastVideoPts);
+    pes.setPts(pts);
     pes.setStreamId(componentTagToStreamId(mmtStream->getComponentTag()));
-    if (mmtStream->getAssetType() == MmtTlv::AssetType::hev1 ||
-        mmtStream->getAssetType() == MmtTlv::AssetType::mp4a) {
-        pes.setDataAlignmentIndicator(true);
-    }
     pes.setPayload(&subtitle.pesData);
     pes.pack(pesOutput);
 
@@ -301,13 +307,14 @@ void RemuxerHandler::writeSubtitle(const std::shared_ptr<MmtTlv::MmtStream> mmtS
         memcpy(packet.b + packet.getHeaderSize(), pesOutput.data() + (pesOutput.size() - payloadLength), chunkSize);
         payloadLength -= chunkSize;
 
-        output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+        if (outputCallback) {
+            outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+        }
         ++i;
     }
 }
 
-void RemuxerHandler::onMhBit(const std::shared_ptr<MmtTlv::MhBit>& mhBit)
-{
+void RemuxerHandler::onMhBit(const std::shared_ptr<MmtTlv::MhBit>& mhBit) {
     ts::BIT tsBit(mhBit->versionNumber, mhBit->currentNextIndicator);
     tsBit.original_network_id = mhBit->originalNetworkId;
 
@@ -359,7 +366,7 @@ void RemuxerHandler::onMhBit(const std::shared_ptr<MmtTlv::MhBit>& mhBit)
                 tsDescriptor.broadcaster_type = 1;
                 tsDescriptor.terrestrial_broadcaster_id = mhBit->originalNetworkId;
 
-                for (auto affiliationId : mmtDescriptor->affiliationIds) {
+                for (const auto affiliationId : mmtDescriptor->affiliationIds) {
                     tsDescriptor.affiliation_ids.emplace_back(affiliationId);
                 }
 
@@ -423,25 +430,30 @@ void RemuxerHandler::onMhBit(const std::shared_ptr<MmtTlv::MhBit>& mhBit)
             packet.setCC(mapCC[ts::PID_BIT] & 0xF);
             mapCC[ts::PID_BIT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onMhAit(const std::shared_ptr<MmtTlv::MhAit>& mhAit)
-{
+void RemuxerHandler::onMhAit(const std::shared_ptr<MmtTlv::MhAit>& mhAit) {
     // Not implemented
 }
 
-void RemuxerHandler::onMhEit(const std::shared_ptr<MmtTlv::MhEit>& mhEit)
-{
+void RemuxerHandler::onMhEit(const std::shared_ptr<MmtTlv::MhEit>& mhEit) {
     tsid = mhEit->tlvStreamId;
 
+    if (mhEit->isPf() && mhEit->sectionNumber == 0) {
+        std::tm startTime = EITConvertStartTime((mhEit->events.begin())->get()->startTime);
+        programStartTime = static_cast<uint64_t>(std::mktime(&startTime));
+    }
+
     ts::EIT tsEit(true, mhEit->isPf(), 0, mhEit->versionNumber, true, mhEit->serviceId, mhEit->tlvStreamId, mhEit->originalNetworkId);
-    for (auto& mhEvent : mhEit->events) {
+    for (const auto& mhEvent : mhEit->events) {
         ts::EIT::Event tsEvent(&tsEit);
 
-        struct tm startTime = EITConvertStartTime(mhEvent->startTime);
+        tm startTime = EITConvertStartTime(mhEvent->startTime);
         try {
             tsEvent.start_time = ts::Time(startTime.tm_year + 1900, startTime.tm_mon + 1, startTime.tm_mday,
                 startTime.tm_hour, startTime.tm_min, startTime.tm_sec);
@@ -578,13 +590,14 @@ void RemuxerHandler::onMhEit(const std::shared_ptr<MmtTlv::MhEit>& mhEit)
             packet.setCC(mapCC[ts::PID_EIT] & 0xF);
             mapCC[ts::PID_EIT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onMhSdtActual(const std::shared_ptr<MmtTlv::MhSdt>& mhSdt)
-{
+void RemuxerHandler::onMhSdtActual(const std::shared_ptr<MmtTlv::MhSdt>& mhSdt) {
     if (mhSdt->services.size() == 0) {
         return;
     }
@@ -592,21 +605,23 @@ void RemuxerHandler::onMhSdtActual(const std::shared_ptr<MmtTlv::MhSdt>& mhSdt)
     tsid = mhSdt->tlvStreamId;
 
     ts::SDT tsSdt(true, mhSdt->versionNumber, mhSdt->currentNextIndicator, mhSdt->tlvStreamId, mhSdt->originalNetworkId);
-    for (auto& service : mhSdt->services) {
+    for (const auto& service : mhSdt->services) {
         ts::SDT::ServiceEntry tsService(&tsSdt);
         tsService.EITs_present = service->eitScheduleFlag;
         tsService.EITpf_present = service->eitPresentFollowingFlag;
         tsService.running_status = convertRunningStatus(service->runningStatus);
         tsService.CA_controlled = service->freeCaMode;
 
-        for (auto& descriptor : service->descriptors.list) {
+        for (const auto& descriptor : service->descriptors.list) {
             switch (descriptor->getDescriptorTag()) {
             case MmtTlv::MhServiceDescriptor::kDescriptorTag:
             {
                 auto mmtDescriptor = std::dynamic_pointer_cast<MmtTlv::MhServiceDescriptor>(descriptor);
                 auto tsDescriptor = DescriptorConverter<MmtTlv::MhServiceDescriptor>::convert(*mmtDescriptor);
 
-                tsService.descs.add(duck, tsDescriptor);
+                if (tsDescriptor) {
+                    tsService.descs.add(tsDescriptor->data(), tsDescriptor->size());
+                }
                 break;
             }
             case MmtTlv::MhLogoTransmissionDescriptor::kDescriptorTag:
@@ -638,13 +653,14 @@ void RemuxerHandler::onMhSdtActual(const std::shared_ptr<MmtTlv::MhSdt>& mhSdt)
             packet.setCC(mapCC[ts::PID_SDT] & 0xF);
             mapCC[ts::PID_SDT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onPlt(const std::shared_ptr<MmtTlv::Plt>& plt)
-{
+void RemuxerHandler::onPlt(const std::shared_ptr<MmtTlv::Plt>& plt) {
     if (tsid == -1)
         return;
 
@@ -683,13 +699,14 @@ void RemuxerHandler::onPlt(const std::shared_ptr<MmtTlv::Plt>& plt)
             packet.setCC(mapCC[ts::PID_PAT] & 0xF);
             mapCC[ts::PID_PAT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onMpt(const std::shared_ptr<MmtTlv::Mpt>& mpt)
-{
+void RemuxerHandler::onMpt(const std::shared_ptr<MmtTlv::Mpt>& mpt) {
     uint16_t serviceId;
     uint16_t pid;
 
@@ -717,6 +734,7 @@ void RemuxerHandler::onMpt(const std::shared_ptr<MmtTlv::Mpt>& mpt)
         for (int i = 0; i < asset.locationCount; i++) {
             if (asset.locationInfos[i].locationType == 0) {
                 const auto& mmtStream = demuxer.mapStreamByStreamIdx[streamIndex];
+
                 if (mmtStream->getComponentTag() == -1) {
                     streamIndex++;
                     continue;
@@ -741,8 +759,7 @@ void RemuxerHandler::onMpt(const std::shared_ptr<MmtTlv::Mpt>& mpt)
                     descriptor.format_identifier = 0x48455643; // HEVC
                     stream.descs.add(duck, descriptor);
                 }
-
-                if (asset.assetType == MmtTlv::AssetType::stpp) {
+                else if (asset.assetType == MmtTlv::AssetType::stpp) {
                     ts::DataComponentDescriptor descriptor;
                     descriptor.data_component_id = 0x0008;
                     descriptor.additional_data_component_info.push_back(0x3D);
@@ -804,13 +821,14 @@ void RemuxerHandler::onMpt(const std::shared_ptr<MmtTlv::Mpt>& mpt)
             packet.setCC(mapCC[pid] & 0xF);
             mapCC[pid]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onMhTot(const std::shared_ptr<MmtTlv::MhTot>& mhTot)
-{
+void RemuxerHandler::onMhTot(const std::shared_ptr<MmtTlv::MhTot>& mhTot) {
     struct tm startTime = EITConvertStartTime(mhTot->jstTime);
     ts::Time time = ts::Time(startTime.tm_year + 1900, startTime.tm_mon + 1, startTime.tm_mday,
         startTime.tm_hour, startTime.tm_min, startTime.tm_sec);
@@ -831,13 +849,14 @@ void RemuxerHandler::onMhTot(const std::shared_ptr<MmtTlv::MhTot>& mhTot)
             packet.setCC(mapCC[ts::PID_TOT] & 0xF);
             mapCC[ts::PID_TOT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onMhCdt(const std::shared_ptr<MmtTlv::MhCdt>& mhCdt)
-{
+void RemuxerHandler::onMhCdt(const std::shared_ptr<MmtTlv::MhCdt>& mhCdt) {
     ts::CDT cdt(mhCdt->versionNumber, mhCdt->currentNextIndicator);
     cdt.original_network_id = mhCdt->originalNetworkId;
     cdt.download_data_id = mhCdt->downloadDataId;
@@ -861,13 +880,14 @@ void RemuxerHandler::onMhCdt(const std::shared_ptr<MmtTlv::MhCdt>& mhCdt)
             packet.setCC(mapCC[ts::PID_CDT] & 0xF);
             mapCC[ts::PID_CDT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onNit(const std::shared_ptr<MmtTlv::Nit>& nit)
-{
+void RemuxerHandler::onNit(const std::shared_ptr<MmtTlv::Nit>& nit) {
     ts::NIT tsNit(true, nit->versionNumber, nit->currentNextIndicator, nit->networkId);
 
     for (const auto& descriptor : nit->descriptors.list) {
@@ -917,26 +937,29 @@ void RemuxerHandler::onNit(const std::shared_ptr<MmtTlv::Nit>& nit)
             packet.setCC(mapCC[ts::PID_NIT] & 0xF);
             mapCC[ts::PID_NIT]++;
 
-            output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
+            if (outputCallback) {
+                outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+            }
         }
     }
 }
 
-void RemuxerHandler::onNtp(const std::shared_ptr<MmtTlv::NTPv4>& ntp)
-{
-    /*
+void RemuxerHandler::onNtp(const std::shared_ptr<MmtTlv::NTPv4>& ntp) {
     ts::TSPacket packet;
     packet.init(PCR_PID, mapCC[PCR_PID] & 0xF, 0);
     mapCC[PCR_PID]++;
-    packet.setPCR(ntp->transmit_timestamp.toPCRValue(), true);
-    output.insert(output.end(), packet.b, packet.b + packet.getHeaderSize() + packet.getPayloadSize());
-    */
+
+    // Add 0.1 seconds to resolve the playback issue in VLC
+    packet.setPCR(ntp->transmit_timestamp.toPcrValue() + 2700000, true);
+    if (outputCallback) {
+        outputCallback(packet.b, packet.getHeaderSize() + packet.getPayloadSize());
+    }
+
+    lastPcr = ntp->transmit_timestamp.toPcrValue();
 }
 
-void RemuxerHandler::clear()
-{
+void RemuxerHandler::clear() {
     mapService2Pid.clear();
     mapCC.clear();
     tsid = -1;
-    streamCount = 0;
 }

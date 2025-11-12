@@ -3,50 +3,49 @@
 
 namespace {
 
-    uint64_t parseTimestamp(const std::string& timestamp) {
-        size_t dotPos = timestamp.find('.');
-        uint64_t hours, minutes, seconds, millis = 0;
+uint64_t parseTimestamp(const std::string& timestamp) {
+    size_t dotPos = timestamp.find('.');
+    uint64_t hours, minutes, seconds, millis = 0;
 
-        if (dotPos != std::string::npos) {
-            if (timestamp.size() < 10) {
-                throw std::invalid_argument("Invalid timestamp format: " + timestamp);
-            }
-            if (timestamp[2] != ':' || timestamp[5] != ':') {
-                throw std::invalid_argument("Invalid timestamp format: " + timestamp);
-            }
-            hours = std::stoull(timestamp.substr(0, 2));
-            minutes = std::stoull(timestamp.substr(3, 2));
-            seconds = std::stoull(timestamp.substr(6, 2));
-            std::string frac = timestamp.substr(dotPos + 1);
-            if (frac.empty() || frac.size() > 3) {
-                throw std::invalid_argument("Invalid fractional seconds in timestamp: " + timestamp);
-            }
-            if (frac.size() == 1) {
-                millis = std::stoull(frac) * 100;
-            }
-            else if (frac.size() == 2) {
-                millis = std::stoull(frac) * 10;
-            }
-            else {
-                millis = std::stoull(frac);
-            }
+    if (dotPos != std::string::npos) {
+        if (timestamp.size() < 10) {
+            throw std::invalid_argument("Invalid timestamp format: " + timestamp);
+        }
+        if (timestamp[2] != ':' || timestamp[5] != ':') {
+            throw std::invalid_argument("Invalid timestamp format: " + timestamp);
+        }
+        hours = std::stoull(timestamp.substr(0, 2));
+        minutes = std::stoull(timestamp.substr(3, 2));
+        seconds = std::stoull(timestamp.substr(6, 2));
+        std::string frac = timestamp.substr(dotPos + 1);
+        if (frac.empty() || frac.size() > 3) {
+            throw std::invalid_argument("Invalid fractional seconds in timestamp: " + timestamp);
+        }
+        if (frac.size() == 1) {
+            millis = std::stoull(frac) * 100;
+        }
+        else if (frac.size() == 2) {
+            millis = std::stoull(frac) * 10;
         }
         else {
-            if (timestamp.size() != 8 || timestamp[2] != ':' || timestamp[5] != ':') {
-                throw std::invalid_argument("Invalid timestamp format: " + timestamp);
-            }
-            hours = std::stoull(timestamp.substr(0, 2));
-            minutes = std::stoull(timestamp.substr(3, 2));
-            seconds = std::stoull(timestamp.substr(6, 2));
+            millis = std::stoull(frac);
         }
-
-        return hours * 3600 * 1000ULL + minutes * 60 * 1000ULL + seconds * 1000ULL + millis;
     }
+    else {
+        if (timestamp.size() != 8 || timestamp[2] != ':' || timestamp[5] != ':') {
+            throw std::invalid_argument("Invalid timestamp format: " + timestamp);
+        }
+        hours = std::stoull(timestamp.substr(0, 2));
+        minutes = std::stoull(timestamp.substr(3, 2));
+        seconds = std::stoull(timestamp.substr(6, 2));
+    }
+
+    return hours * 3600 * 1000ULL + minutes * 60 * 1000ULL + seconds * 1000ULL + millis;
+}
 
 }
 
-TTML TTMLPaser::parse(const std::vector<uint8_t>& input)
-{
+TTML TTMLPaser::parse(const std::string& input) {
     TTML output;
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_buffer(input.data(), input.size());
@@ -93,8 +92,12 @@ TTML TTMLPaser::parse(const std::vector<uint8_t>& input)
 
     for (pugi::xml_node div : doc.child("tt").child("body").children("div")) {
         TTMLDivTag divTag;
-        divTag.begin = parseTimestamp(div.attribute("begin").value());
-        divTag.end = parseTimestamp(div.attribute("end").value());
+        if (div.attribute("begin")) {
+            divTag.begin = parseTimestamp(div.attribute("begin").value());
+        }
+        if (div.attribute("end")) {
+            divTag.end = parseTimestamp(div.attribute("end").value());
+        }
 
         for (pugi::xml_node p : div.children("p")) {
             std::string regionId = p.attribute("region").value();
@@ -104,7 +107,9 @@ TTML TTMLPaser::parse(const std::vector<uint8_t>& input)
 
             TTMLPTag pTag;
             pTag.id = p.attribute("xml:id").value();
-            pTag.region = *region;
+            if (region != output.regions.end()) {
+                pTag.region = *region;
+            }
 
             for (pugi::xml_node span : p.children("span")) {
                 TTMLSpanTag spanTag;
@@ -150,4 +155,47 @@ TTML TTMLPaser::parse(const std::vector<uint8_t>& input)
     }
 
 	return output;
+}
+
+TTMLCssValue TTMLCssValueParser::parse(const std::string& input) {
+    try {
+        if (input.find("px") != std::string::npos || input.find("em") != std::string::npos ||
+            input.find("rem") != std::string::npos || input.find("%") != std::string::npos) {
+            std::regex regex(R"(^([+-]?\d*\.?\d+)(px|em|rem|%)$)");
+            std::smatch match;
+            if (std::regex_match(input, match, regex)) {
+                return TTMLCssValue(TTMLCssValueLength(std::stof(match[1]), match[2]));
+            }
+            else {
+                throw std::invalid_argument("Invalid length value: " + input);
+            }
+        }
+
+        if (input.find("#") == 0) {
+            return TTMLCssValue(TTMLCssValueColor(input));
+        }
+
+        static const std::set<std::string> validKeywords = { "bold", "italic", "normal", "none" };
+        if (validKeywords.find(input) != validKeywords.end()) {
+            return TTMLCssValue(TTMLCssValueKeyword(input));
+        }
+
+        return TTMLCssValue(TTMLCssValueNumber(std::stof(input)));
+
+    }
+    catch (const std::invalid_argument& e) {
+        std::cerr << e.what() << std::endl;
+        throw;
+    }
+}
+
+TTMLCssValuePair TTMLCssValueParser::parsePair(const std::string& input) {
+    std::istringstream iss(input);
+    std::string token1, token2;
+    if (!(iss >> token1 >> token2)) {
+        throw std::invalid_argument("Failed to parse TTML value pair from: " + input);
+    }
+    TTMLCssValue value1 = parse(token1);
+    TTMLCssValue value2 = parse(token2);
+    return std::make_pair(value1, value2);
 }

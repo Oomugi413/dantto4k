@@ -1,301 +1,284 @@
 ﻿#include <iostream>
+#include "cxxopts.hpp"
 #include "stream.h"
 #include "remuxerHandler.h"
 #include "config.h"
-#include "dantto4k.h"
-#ifdef _WIN32
-#include "logger.h"
-#include <dbghelp.h>
-#include "bonTuner.h"
-#endif
+#include "mmtTlvDemuxer.h"
 #include "aribUtil.h"
+#include "casProxyClient.h"
+#include "acasHandler.h"
+#include "smartCard.h"
 
-MmtTlv::MmtTlvDemuxer demuxer;
-std::vector<uint8_t> output;
-RemuxerHandler handler(demuxer, output);
+namespace {
 
-#ifdef _WIN32
-CBonTuner bonTuner;
-HINSTANCE hDantto4kModule = nullptr;
+struct Args {
+    std::string input;
+    std::string output;
+    std::string casProxyHost;
+    uint16_t casProxyPort{0};
+    std::string smartCardReaderName;
+    bool disableTransaction{false};
+    bool disableADTSConversion{false};
+    bool listSmartCardReader{false};
+};
 
-std::string getConfigFilePath(void* hModule) {
-    char g_IniFilePath[_MAX_FNAME];
-    GetModuleFileNameA((HMODULE)hModule, g_IniFilePath, MAX_PATH);
 
-    char drive[_MAX_DRIVE];
-    char dir[_MAX_DIR];
-    char fname[_MAX_FNAME];
-    _splitpath_s(g_IniFilePath, drive, sizeof(drive), dir, sizeof(dir), fname, sizeof(fname), NULL, NULL);
-    sprintf(g_IniFilePath, "%s%s%s.ini\0", drive, dir, fname);
+Args parseArguments(int argc, char* argv[]) {
+    Args args;
 
-    return g_IniFilePath;
-}
-
-extern "C" __declspec(dllexport) IBonDriver* CreateBonDriver() {
     try {
-        std::string path = getConfigFilePath(hDantto4kModule);
-        config = loadConfig(path);
+        cxxopts::Options options("dantto4k", "MMT/TLV to MPEG-2 TS Converter (https://github.com/nekohkr/dantto4k)");
 
-        demuxer.setDemuxerHandler(handler);
-        demuxer.setSmartCardReaderName(config.smartCardReaderName);
-        demuxer.init();
+        options.add_options()
+            ("input", "Input file ('-' for stdin)", cxxopts::value<std::string>()->default_value(""))
+            ("output", "Output file ('-' for stdout)", cxxopts::value<std::string>()->default_value(""))
+            ("listSmartCardReader", "List available smart card readers", cxxopts::value<bool>()->default_value("false"))
+            ("casProxyServer", "Specify the address of a CasProxyServer", cxxopts::value<std::string>()->default_value(""))
+            ("smartCardReaderName", "Specify the smart card reader to use", cxxopts::value<std::string>()->default_value(""))
+            ("disableTransaction", "Disable transaction when using the smart card", cxxopts::value<bool>()->default_value("false"))
+            ("disableADTSConversion", "Disable ADTS conversion", cxxopts::value<bool>()->default_value("false"))
+            ("help", "Show help");
 
-        bonTuner.init();
-    }
-    catch (const std::runtime_error& e) {
-        std::cerr << e.what() << std::endl;
-    }
-    return &bonTuner;
-}
+        options.parse_positional({ "input", "output" });
+        options.positional_help("input output ('-' for stdin/stdout)");
+        auto result = options.parse(argc, argv);
 
-BOOL APIENTRY DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpReserved) {
-    switch (fdwReason) {
-    case DLL_PROCESS_ATTACH:
-    {
-        hDantto4kModule = hModule;
-        break;
-    }
-    }
+        if (result.count("help") || (!result.count("listSmartCardReader") && (!result.count("input") || !result.count("output")))) {
+            std::cout << options.help() << std::endl;
+            std::exit(1);
+        }
 
-    return true;
-}
+        args.input = result["input"].as<std::string>();
+        args.output = result["output"].as<std::string>();
 
-void PrintStackTrace(CONTEXT* context) {
-    HANDLE process = GetCurrentProcess();
-    HANDLE thread = GetCurrentThread();
-
-    SymInitialize(process, NULL, TRUE);
-
-    STACKFRAME64 stackFrame = { 0 };
-    DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
-
-    stackFrame.AddrPC.Offset = context->Rip;
-    stackFrame.AddrPC.Mode = AddrModeFlat;
-    stackFrame.AddrFrame.Offset = context->Rsp;
-    stackFrame.AddrFrame.Mode = AddrModeFlat;
-    stackFrame.AddrStack.Offset = context->Rsp;
-    stackFrame.AddrStack.Mode = AddrModeFlat;
-
-    while (StackWalk64(machineType, process, thread, &stackFrame, context, NULL,
-        SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
-        DWORD64 address = stackFrame.AddrPC.Offset;
-
-        DWORD64 baseAddress = SymGetModuleBase64(process, address);
-        if (baseAddress) {
-            char moduleName[MAX_PATH];
-            if (GetModuleFileNameA((HMODULE)baseAddress, moduleName, sizeof(moduleName))) {
-                std::string fullPath(moduleName);
-                size_t pos = fullPath.find_last_of("\\/");
-                std::string fileName = (pos == std::string::npos) ? fullPath : fullPath.substr(pos + 1);
-
-                SYMBOL_INFO* symbol = (SYMBOL_INFO*)malloc(sizeof(SYMBOL_INFO) + MAX_SYM_NAME);
-                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-                symbol->MaxNameLen = MAX_SYM_NAME;
-
-                if (SymFromAddr(process, address, NULL, symbol)) {
-                    DWORD64 offset = address - baseAddress;
-                    log_debug("%s+0x%llx", fileName.c_str(), offset);
-                }
-                else {
-                    log_debug("0x%llx", address);
-                }
-
-                free(symbol);
+        std::string casProxyServer = result["casProxyServer"].as<std::string>();
+        if (!casProxyServer.empty()) {
+            auto parsed = casproxy::parseAddress(casProxyServer);
+            if (!parsed) {
+                std::cerr << "Invalid CasProxyServer address" << std::endl;
+                std::exit(1);
             }
+            args.casProxyHost = parsed->first;
+            args.casProxyPort = parsed->second;
+        }
+
+        args.smartCardReaderName = result["smartCardReaderName"].as<std::string>();
+        args.listSmartCardReader = result["listSmartCardReader"].as<bool>();
+
+        if (!args.listSmartCardReader) {
+            if (!result.count("input") || !result.count("output")) {
+                std::cerr << "input and output arguments are required.\n\n"
+                    << options.help() << '\n';
+                std::exit(1);
+            }
+
+            if (args.input != "-" && args.input == args.output) {
+                std::cerr << "Input and output paths cannot be the same.\n\n"
+                    << options.help() << '\n';
+                std::exit(1);
+            }
+        }
+
+        args.disableTransaction = result["disableTransaction"].as<bool>();
+        args.disableADTSConversion = result["disableADTSConversion"].as<bool>();
+    }
+    catch (const cxxopts::exceptions::exception& e) {
+        std::cerr << e.what() << std::endl;
+        std::exit(1);
+    }
+
+    return args;
+}
+
+void printReaderList(const Args& args) {
+    if (args.casProxyHost.empty()) {
+        SCARDCONTEXT hContext;
+        LONG result = SCardEstablishContext(SCARD_SCOPE_USER, nullptr, nullptr, &hContext);
+
+        DWORD readersSize = 0;
+        result = SCardListReaders(hContext, nullptr, nullptr, &readersSize);
+        if (result != SCARD_S_SUCCESS) {
+            if (result == SCARD_E_NO_READERS_AVAILABLE) {
+                std::cerr << "No smart card readers are available" << std::endl;
+                return;
+            }
+
+            std::cerr << "Failed to list smart card readers: " << std::showbase << std::hex << result << std::endl;
+            return;
+        }
+
+        std::vector<char> readersBuffer(readersSize);
+        result = SCardListReaders(hContext, nullptr, readersBuffer.data(), &readersSize);
+        if (result != SCARD_S_SUCCESS) {
+            if (result == SCARD_E_NO_READERS_AVAILABLE) {
+                std::cerr << "No smart card readers are available" << std::endl;
+                return;
+            }
+
+            std::cerr << "Failed to list smart card readers: " << std::showbase << std::hex << result << std::endl;
+            return;
+        }
+
+        const char* reader = readersBuffer.data();
+        while (*reader != L'\0') {
+            std::cerr << " - " << reader << std::endl;
+            reader += strlen(reader) + 1;
+        }
+
+        SCardReleaseContext(hContext);
+    }
+    else {
+        try {
+            CasProxyClient client(args.casProxyHost, args.casProxyPort);
+            client.connect();
+
+            SCARDCONTEXT hContext;
+            LONG result = client.scardEstablishContext(SCARD_SCOPE_USER, nullptr, nullptr, &hContext);
+
+            DWORD readersSize = 0;
+            result = client.scardListReaders(hContext, nullptr, nullptr, &readersSize);
+            if (result != SCARD_S_SUCCESS) {
+                if (result == SCARD_E_NO_READERS_AVAILABLE) {
+                    std::cerr << "No smart card readers are available" << std::endl;
+                    return;
+                }
+
+                std::cerr << "Failed to list smart card readers: " << std::showbase << std::hex << result << std::endl;
+                return;
+            }
+
+            std::vector<char> readersBuffer(readersSize);
+            result = client.scardListReaders(hContext, nullptr, readersBuffer.data(), &readersSize);
+            if (result != SCARD_S_SUCCESS) {
+                if (result == SCARD_E_NO_READERS_AVAILABLE) {
+                    std::cerr << "No smart card readers are available" << std::endl;
+                    return;
+                }
+
+                std::cerr << "Failed to list smart card readers: " << std::showbase << std::hex << result << std::endl;
+                return;
+            }
+
+            const char* reader = readersBuffer.data();
+            while (*reader != L'\0') {
+                std::cerr << " - " << reader << std::endl;
+                reader += strlen(reader) + 1;
+            }
+
+            client.scardReleaseContext(hContext);
+        }
+        catch (const std::runtime_error& e) {
+            std::cerr << e.what() << std::endl;
         }
     }
 
-    SymCleanup(process);
 }
 
-LONG WINAPI ExceptionHandler(EXCEPTION_POINTERS* exceptionInfo) {
-    log_debug("An exception occurred!");
-    PrintStackTrace(exceptionInfo->ContextRecord);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
-static MmtTlv::DemuxStatus demuxWithHandler(MmtTlv::Common::ReadStream& input) {
-    __try {
-        return demuxer.demux(input);
-    }
-    __except (ExceptionHandler(GetExceptionInformation())) {
-    }
-
-    return MmtTlv::DemuxStatus::Error;
-}
-
-#endif
-
-size_t getLeftBytes(std::istream* inputStream) {
-    std::streampos currentPos = inputStream->tellg();
-
-    inputStream->seekg(0, std::ios::end);
-    std::streampos fileSize = inputStream->tellg();
-
-    inputStream->seekg(currentPos);
-
-    return static_cast<size_t>(fileSize - currentPos);
-}
-
-void printReaderList() {
-    SCARDCONTEXT hContext;
-    LONG result = SCardEstablishContext(SCARD_SCOPE_USER, nullptr, nullptr, &hContext);
-
-    DWORD readersSize = 0;
-    SCardListReaders(hContext, nullptr, nullptr, &readersSize);
-    if (result != SCARD_S_SUCCESS) {
-        std::cerr << "Failed to get size of reader list. (result: " << result << ")" << std::endl;
-        return;
-    }
-
-    std::vector<char> readersBuffer(readersSize);
-    result = SCardListReaders(hContext, nullptr, readersBuffer.data(), &readersSize);
-    if (result != SCARD_S_SUCCESS) {
-        std::cerr << "Failed to get size of reader list. (result: " << result << ")" << std::endl;
-        return;
-    }
-
-    const char* reader = readersBuffer.data();
-    while (*reader != L'\0') {
-        std::cerr << " - " << reader << std::endl;
-        reader += strlen(reader) + 1;
-    }
-
-    SCardReleaseContext(hContext);
 }
 
 int main(int argc, char* argv[]) {
-    constexpr size_t chunkSize = 1024 * 1024 * 20; // 20MB
-    auto start = std::chrono::high_resolution_clock::now();
+    const auto startTime = std::chrono::high_resolution_clock::now();
+    constexpr size_t chunkSize = 1024 * 1024 * 5; // 5MB
 
-    std::string inputPath, outputPath;
-    bool useStdin = false, useStdout = false;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
+    Args args = parseArguments(argc, argv);
+    config.disableTransaction = args.disableTransaction;
+    config.disableADTSConversion = args.disableADTSConversion;
 
-        if (arg == "--disableADTSConversion") {
-            config.disableADTSConversion = true;
-        }
-        else if (arg.find("--smartCardReaderName=") == 0) {
-            config.smartCardReaderName = arg.substr(std::string("--smartCardReaderName=").length());
-        }
-        else if (arg == "--listSmartCardReader") {
-            printReaderList();
-            return 1;
-        }
-        else {
-            if (inputPath == "") {
-                inputPath = arg;
-                if (inputPath == "-") {
-                    useStdin = true;
-                }
-            }
-            else if (outputPath == "") {
-                outputPath = arg;
-                if (outputPath == "-") {
-                    useStdout = true;
-                }
-            }
-        }
+    bool useStdin = (args.input == "-");
+    bool useStdout = (args.output == "-");
+
+    if (args.listSmartCardReader) {
+        printReaderList(args);
+        return 0;
     }
 
-    if (inputPath == "" || outputPath == "") {
-        std::cerr << "dantto4k.exe <input.mmts> <output.ts> [options]" << std::endl;
-        std::cerr << "\t'-' can be used instead of a file path to enable piping via stdin or stdout." << std::endl;
-        std::cerr << "options:" << std::endl;
-        std::cerr << "\t--disableADTSConversion: Uses the raw LATM format without converting to ADTS." << std::endl;
-        std::cerr << "\t--listSmartCardReader: Lists the available smart card readers." << std::endl;
-        std::cerr << "\t--smartCardReaderName=<name>: Sets the smart card reader to use." << std::endl;
-        return 1;
-    }
-
-    if (inputPath != "-" && inputPath == outputPath) {
-        std::cerr << "Input and output paths cannot be the same." << std::endl;
-        return 1;
-    }
-
-    std::istream *inputStream = nullptr;
-    std::ifstream *inputFs = nullptr;
+    std::istream* inputStream;
+    std::unique_ptr<std::ifstream> inputFs;
     if (useStdin) {
         inputStream = &std::cin;
     }
     else {
-        inputFs = new std::ifstream(inputPath, std::ios::binary);
+        inputFs = std::make_unique<std::ifstream>(args.input, std::ios::binary);
         if (!inputFs->is_open()) {
-            std::cerr << "Unable to open input file: " << inputPath << std::endl;
+            std::cerr << "Unable to open input file: " << args.input << std::endl;
             return 1;
         }
-        inputStream = inputFs;
+        inputStream = inputFs.get();
     }
 
-    std::ofstream* outputFs = nullptr;
-    if (!useStdout) {
-        outputFs = new std::ofstream(outputPath, std::ios::binary);
+    std::ostream* outputStream;
+    std::unique_ptr<std::ofstream> outputFs;
+    if (useStdout) {
+        outputStream = &std::cout;
+    }
+    else {
+        outputFs = std::make_unique<std::ofstream>(args.output, std::ios::binary);
         if (!outputFs->is_open()) {
-            std::cerr << "Unable to open output file: " << inputPath << std::endl;
+            std::cerr << "Unable to open output file: " << args.output << std::endl;
             return 1;
         }
+        outputStream = outputFs.get();
     }
 
+    MmtTlv::MmtTlvDemuxer demuxer;
+    RemuxerHandler handler(demuxer);
+    handler.setOutputCallback([&](const uint8_t* data, size_t size) {
+        assert(size == 188);
+        outputStream->write(reinterpret_cast<const char*>(data), size);
+    });
     demuxer.setDemuxerHandler(handler);
-    demuxer.setSmartCardReaderName(config.smartCardReaderName);
-    demuxer.init();
 
-    std::vector<uint8_t> buffer;
-    while (!inputStream->eof()) {
-        if (buffer.size() < chunkSize) {
-            size_t readSize = std::min(chunkSize, getLeftBytes(inputStream));
-            if (readSize == 0) {
-                break;
-            }
+    {
+        // Create ACAS handler and initialize the smart card
+        std::unique_ptr<AcasHandler> acasHandler = std::make_unique<AcasHandler>();
+        std::unique_ptr<ISmartCard> smartCard;
+        if (args.casProxyHost.empty()) {
+            smartCard = std::make_unique<LocalSmartCard>();
+        }
+        else {
+            smartCard = std::make_unique<RemoteSmartCard>(args.casProxyHost, args.casProxyPort);
+        }
+        
+        smartCard->setSmartCardReaderName(args.smartCardReaderName);
+        acasHandler->setSmartCard(std::move(smartCard));
+        demuxer.setCasHandler(std::move(acasHandler));
+    }
 
-            buffer.resize(buffer.size() + readSize);
-            inputStream->read(reinterpret_cast<char*>(buffer.data() + buffer.size() - readSize), readSize);
+    std::vector<uint8_t> inputBuffer;
+    inputBuffer.reserve(chunkSize * 2);
+    while (true) {
+        if (!useStdin && inputStream->eof()) {
+            break;
         }
 
-        MmtTlv::Common::ReadStream stream(buffer);
-        while (!stream.isEof()) {
-            MmtTlv::DemuxStatus status;
+        if (inputBuffer.size() < chunkSize) {
+            std::vector<uint8_t> buffer(chunkSize);
+            inputStream->read(reinterpret_cast<char*>(buffer.data()), chunkSize);
+            std::streamsize bytes = inputStream->gcount();
 
-#ifdef _WIN32
-            status = demuxWithHandler(stream);
-#else
-            status = demuxer.demux(stream);
-#endif
+            if (bytes > 0) {
+                inputBuffer.insert(inputBuffer.end(), buffer.begin(), buffer.begin() + bytes);
+            }
+        }
+
+        MmtTlv::Common::ReadStream stream(inputBuffer);
+        while (!stream.isEof()) {
+            MmtTlv::DemuxStatus status = demuxer.demux(stream);
 
             if (status == MmtTlv::DemuxStatus::NotEnoughBuffer) {
                 break;
             }
         }
 
-        buffer.erase(buffer.begin(), buffer.begin() + (buffer.size() - stream.leftBytes()));
-
-        if (useStdout) {
-            std::cout.write(reinterpret_cast<const char*>(output.data()), output.size());
-        }
-        else {
-            outputFs->write(reinterpret_cast<const char*>(output.data()), output.size());
-        }
-        
-        output.clear();
+        inputBuffer.erase(inputBuffer.begin(), inputBuffer.begin() + (inputBuffer.size() - stream.leftBytes()));
     }
-
-    if (inputFs) {
-        inputFs->close();
-        delete inputFs;
-    }
-    if (outputFs) {
-        outputFs->close();
-        delete outputFs;
-    }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed_seconds = end - start;
 
     demuxer.printStatistics();
     demuxer.clear();
-    demuxer.release();
 
-    std::cerr << "Elapsed time: " << elapsed_seconds.count() << " seconds\n";
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = endTime - startTime;
+    std::cerr << "Elapsed time: " << elapsed.count() << " seconds\n";
+
     return 0;
 }
